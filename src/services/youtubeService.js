@@ -5,7 +5,20 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { EventEmitter } = require("events");
-const { TEMP_DIR, DOWNLOAD_DIR, sanitizeFilename } = require("../utils/helpers");
+const { TEMP_DIR, DOWNLOAD_DIR, COOKIES_PATH, sanitizeFilename } = require("../utils/helpers");
+const fs_helpers = require("fs");
+
+// Build common yt-dlp options (includes cookies if available)
+function baseYtdlpOpts() {
+  const opts = {
+    noCheckCertificates: true,
+    noWarnings: true,
+  };
+  if (fs_helpers.existsSync(COOKIES_PATH)) {
+    opts.cookies = COOKIES_PATH;
+  }
+  return opts;
+}
 
 ffmpeg.setFfmpegPath(ffmpegPath);
 
@@ -56,8 +69,7 @@ const QUALITY_PRESETS = {
 async function getVideoInfo(url) {
   const info = await youtubedl(url, {
     dumpSingleJson: true,
-    noCheckCertificates: true,
-    noWarnings: true,
+    ...baseYtdlpOpts(),
   });
 
   return {
@@ -96,8 +108,7 @@ function downloadAndMerge(url, quality = "balanced") {
       await youtubedl(url, {
         output: videoPath,
         format: preset.videoFormat,
-        noCheckCertificates: true,
-        noWarnings: true,
+        ...baseYtdlpOpts(),
       });
       progress.emit("progress", { phase: "Video downloaded", percent: 35 });
 
@@ -107,8 +118,7 @@ function downloadAndMerge(url, quality = "balanced") {
       await youtubedl(url, {
         output: audioPath,
         format: "bestaudio[ext=m4a]/bestaudio",
-        noCheckCertificates: true,
-        noWarnings: true,
+        ...baseYtdlpOpts(),
       });
       progress.emit("progress", { phase: "Audio downloaded", percent: 55 });
 

@@ -1,5 +1,8 @@
 const app = require("./src/app");
-const { DOWNLOAD_DIR } = require("./src/utils/helpers");
+const { DOWNLOAD_DIR, setupCookies } = require("./src/utils/helpers");
+
+// Write cookies from env variable to file (for cloud deployments)
+setupCookies();
 
 const PORT = process.env.PORT || 3000;
 
