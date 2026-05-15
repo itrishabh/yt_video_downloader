@@ -9,12 +9,15 @@ const { TEMP_DIR, DOWNLOAD_DIR, COOKIES_PATH, sanitizeFilename } = require("../u
 const fs_helpers = require("fs");
 
 // Build common yt-dlp options (includes cookies if available)
-function baseYtdlpOpts() {
+function baseYtdlpOpts(cookiePath) {
   const opts = {
     noCheckCertificates: true,
     noWarnings: true,
   };
-  if (fs_helpers.existsSync(COOKIES_PATH)) {
+  // Per-request cookies take priority over global cookies
+  if (cookiePath && fs_helpers.existsSync(cookiePath)) {
+    opts.cookies = cookiePath;
+  } else if (fs_helpers.existsSync(COOKIES_PATH)) {
     opts.cookies = COOKIES_PATH;
   }
   return opts;
@@ -66,10 +69,10 @@ const QUALITY_PRESETS = {
 /**
  * Fetch video metadata from YouTube.
  */
-async function getVideoInfo(url) {
+async function getVideoInfo(url, cookiePath) {
   const info = await youtubedl(url, {
     dumpSingleJson: true,
-    ...baseYtdlpOpts(),
+    ...baseYtdlpOpts(cookiePath),
   });
 
   return {
@@ -85,13 +88,13 @@ async function getVideoInfo(url) {
  * Emits progress events on the returned emitter.
  * quality: one of "fast" | "balanced" | "high" | "best"
  */
-function downloadAndMerge(url, quality = "balanced") {
+function downloadAndMerge(url, quality = "balanced", cookiePath = null) {
   const progress = new EventEmitter();
   const preset = QUALITY_PRESETS[quality] || QUALITY_PRESETS.balanced;
 
   // Run the async work, emitting progress events
   (async () => {
-    const info = await getVideoInfo(url);
+    const info = await getVideoInfo(url, cookiePath);
     const title = sanitizeFilename(info.title);
     const finalName = title + ".mp4";
     const finalPath = path.join(DOWNLOAD_DIR, finalName);
@@ -108,7 +111,7 @@ function downloadAndMerge(url, quality = "balanced") {
       await youtubedl(url, {
         output: videoPath,
         format: preset.videoFormat,
-        ...baseYtdlpOpts(),
+        ...baseYtdlpOpts(cookiePath),
       });
       progress.emit("progress", { phase: "Video downloaded", percent: 35 });
 
@@ -118,7 +121,7 @@ function downloadAndMerge(url, quality = "balanced") {
       await youtubedl(url, {
         output: audioPath,
         format: "bestaudio[ext=m4a]/bestaudio",
-        ...baseYtdlpOpts(),
+        ...baseYtdlpOpts(cookiePath),
       });
       progress.emit("progress", { phase: "Audio downloaded", percent: 55 });
 

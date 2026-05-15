@@ -244,6 +244,75 @@
       transition: background 0.2s;
     }
     .download-link:hover { background: #1a881a; }
+
+    /* Cookies section */
+    .cookies-section {
+      margin-bottom: 20px;
+    }
+    .cookies-toggle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      font-size: 13px;
+      color: #aaa;
+      background: none;
+      border: none;
+      padding: 0;
+      font-family: inherit;
+      transition: color 0.2s;
+    }
+    .cookies-toggle:hover { color: #fff; }
+    .cookies-toggle .arrow {
+      display: inline-block;
+      transition: transform 0.2s;
+      font-size: 10px;
+    }
+    .cookies-toggle .arrow.open { transform: rotate(90deg); }
+    .cookies-body {
+      display: none;
+      margin-top: 10px;
+    }
+    .cookies-body.visible { display: block; }
+    .cookies-body textarea {
+      width: 100%;
+      min-height: 100px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid #333;
+      background: #1a1a1a;
+      color: #ccc;
+      font-size: 12px;
+      font-family: "Courier New", monospace;
+      resize: vertical;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .cookies-body textarea:focus { border-color: #ff4444; }
+    .cookies-body textarea::placeholder { color: #555; }
+    .cookies-hint {
+      font-size: 11px;
+      color: #666;
+      margin-top: 6px;
+      line-height: 1.4;
+    }
+    .cookies-hint a {
+      color: #ff6666;
+      text-decoration: none;
+    }
+    .cookies-hint a:hover { text-decoration: underline; }
+    .cookies-status {
+      display: inline-block;
+      margin-left: 8px;
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-weight: 600;
+    }
+    .cookies-active {
+      background: #1a3a1a;
+      color: #5eff5e;
+    }
   </style>
 </head>
 <body>
@@ -254,6 +323,27 @@
     <div class="input-group">
       <input type="text" id="urlInput" placeholder="https://www.youtube.com/watch?v=..." />
       <button id="downloadBtn" onclick="startDownload()">Download</button>
+    </div>
+
+    <!-- Cookies Section -->
+    <div class="cookies-section">
+      <button class="cookies-toggle" onclick="toggleCookies()">
+        <span class="arrow" id="cookiesArrow">&#9654;</span>
+        &#127850; YouTube Cookies (required for cloud/live site)
+        <span class="cookies-status cookies-active" id="cookiesBadge" style="display:none">Active</span>
+      </button>
+      <div class="cookies-body" id="cookiesBody">
+        <textarea id="cookiesInput" placeholder="Paste your cookies.txt content here...
+Example format:
+# Netscape HTTP Cookie File
+.youtube.com	TRUE	/	TRUE	0	LOGIN_INFO	...
+.youtube.com	TRUE	/	FALSE	0	SID	..."></textarea>
+        <div class="cookies-hint">
+          How to get cookies: Install
+          <a href="https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc" target="_blank">Get cookies.txt LOCALLY</a>
+          extension &rarr; Sign in to YouTube &rarr; Click extension on youtube.com &rarr; Copy all &rarr; Paste above.
+        </div>
+      </div>
     </div>
 
     <!-- Quality Picker -->
@@ -318,6 +408,36 @@
 
     let selectedQuality = "fast";
 
+    function toggleCookies() {
+      const body = document.getElementById("cookiesBody");
+      const arrow = document.getElementById("cookiesArrow");
+      const isOpen = body.classList.contains("visible");
+      body.classList.toggle("visible", !isOpen);
+      arrow.classList.toggle("open", !isOpen);
+    }
+
+    // Update badge when cookies are pasted
+    document.addEventListener("DOMContentLoaded", () => {
+      const cookiesInput = document.getElementById("cookiesInput");
+      const badge = document.getElementById("cookiesBadge");
+      cookiesInput.addEventListener("input", () => {
+        badge.style.display = cookiesInput.value.trim() ? "inline-block" : "none";
+      });
+
+      // Load saved cookies from localStorage
+      const saved = localStorage.getItem("yt_cookies");
+      if (saved) {
+        cookiesInput.value = saved;
+        badge.style.display = "inline-block";
+      }
+    });
+
+    function getUserCookies() {
+      const val = document.getElementById("cookiesInput").value.trim();
+      if (val) localStorage.setItem("yt_cookies", val);
+      return val || null;
+    }
+
     function selectQuality(el) {
       document.querySelectorAll(".quality-card").forEach((c) => c.classList.remove("selected"));
       el.classList.add("selected");
@@ -364,8 +484,14 @@
       // Step 1: Fetch info
       setStatus("loading", '<span class="spinner"></span>Fetching video info...');
 
+      const cookies = getUserCookies();
+
       try {
-        const infoRes = await fetch("/api/video/info?url=" + encodeURIComponent(url));
+        const infoRes = await fetch("/api/video/info", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url, cookies }),
+        });
         const info = await infoRes.json();
 
         if (!infoRes.ok) throw new Error(info.error);
@@ -382,51 +508,73 @@
         clearStatus();
         showProgress("Starting download...", 0);
 
-        const sseUrl =
-          "/api/video/download-sse?url=" +
-          encodeURIComponent(url) +
-          "&quality=" +
-          encodeURIComponent(selectedQuality);
+        // Start SSE download via POST (fetch as stream)
+        const sseRes = await fetch("/api/video/download-sse", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url, quality: selectedQuality, cookies }),
+        });
 
-        const evtSource = new EventSource(sseUrl);
+        if (!sseRes.ok) {
+          const errBody = await sseRes.json().catch(() => ({ error: "Download failed" }));
+          throw new Error(errBody.error || "Download failed");
+        }
 
-        evtSource.onmessage = function (event) {
-          const data = JSON.parse(event.data);
+        const reader = sseRes.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
 
-          if (data.type === "progress") {
-            showProgress(data.phase, data.percent);
-          } else if (data.type === "done") {
-            evtSource.close();
-            hideProgress();
-            setStatus(
-              "success",
-              "&#10003; Download complete! (" +
-                data.sizeFormatted +
-                ")" +
-                '<br><a class="download-link" href="' +
-                data.downloadUrl +
-                '">&#11015; Save ' +
-                data.filename +
-                "</a>"
-            );
-            downloadBtn.disabled = false;
-          } else if (data.type === "error") {
-            evtSource.close();
-            hideProgress();
-            setStatus("error", "&#10007; Error: " + data.error);
-            downloadBtn.disabled = false;
+        function processSSEBuffer() {
+          const lines = buffer.split("\n");
+          buffer = lines.pop(); // keep incomplete line
+          for (const line of lines) {
+            if (line.startsWith("data: ")) {
+              try {
+                const data = JSON.parse(line.slice(6));
+                handleSSE(data);
+              } catch(e) {}
+            }
           }
-        };
+        }
 
-        evtSource.onerror = function () {
-          evtSource.close();
-          hideProgress();
-          setStatus("error", "&#10007; Connection lost. Please try again.");
-          downloadBtn.disabled = false;
-        };
+        let done = false;
+        while (!done) {
+          const { value, done: streamDone } = await reader.read();
+          if (streamDone) break;
+          buffer += decoder.decode(value, { stream: true });
+          processSSEBuffer();
+        }
+        // Process any remaining buffer
+        if (buffer.trim()) processSSEBuffer();
+        return; // exit handled via handleSSE
+
       } catch (err) {
         hideProgress();
         setStatus("error", "&#10007; Error: " + err.message);
+        downloadBtn.disabled = false;
+      }
+    }
+
+    function handleSSE(data) {
+      if (data.type === "progress") {
+        showProgress(data.phase, data.percent);
+      } else if (data.type === "done") {
+        hideProgress();
+        setStatus(
+          "success",
+          "&#10003; Download complete! (" +
+            data.sizeFormatted +
+            ")" +
+            '<br><a class="download-link" href="' +
+            data.downloadUrl +
+            '">&#11015; Save ' +
+            data.filename +
+            "</a>"
+        );
+        downloadBtn.disabled = false;
+      } else if (data.type === "error") {
+        hideProgress();
+        setStatus("error", "&#10007; Error: " + data.error);
         downloadBtn.disabled = false;
       }
     }
