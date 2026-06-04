@@ -5,7 +5,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "npx nodemon server.js"
+    "dev": "npx nodemon server.js",
+    "build": "YOUTUBE_DL_SKIP_DOWNLOAD=true npm install && curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o ./node_modules/youtube-dl-exec/bin/yt-dlp && chmod +x ./node_modules/youtube-dl-exec/bin/yt-dlp"
   },
   "dependencies": {
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
