@@ -1,25 +1,6 @@
-const { isValidYouTubeURL, formatBytes, TEMP_DIR } = require("../utils/helpers");
+const { isValidYouTubeURL, formatBytes } = require("../utils/helpers");
 const youtubeService = require("../services/youtubeService");
-const fs = require("fs");
-const path = require("path");
-const crypto = require("crypto");
-
-/**
- * Write user-supplied cookies to a temp file and return its path.
- * Returns null if no cookies were provided.
- */
-function writeUserCookies(cookies) {
-  if (!cookies || typeof cookies !== "string" || !cookies.trim()) return null;
-  const cookieFile = path.join(TEMP_DIR, `cookies_${crypto.randomBytes(6).toString("hex")}.txt`);
-  fs.writeFileSync(cookieFile, cookies, "utf-8");
-  return cookieFile;
-}
-
-function cleanupCookieFile(cookiePath) {
-  if (cookiePath) {
-    try { fs.unlinkSync(cookiePath); } catch (_) {}
-  }
-}
+const logger = require("../utils/logger");
 
 /**
  * GET /api/video/info?url=...
@@ -29,17 +10,18 @@ async function getInfo(req, res) {
   const { url, cookies } = req.body;
 
   if (!url || !isValidYouTubeURL(url)) {
+    logger.warn("Invalid YouTube URL received", { url });
     return res.status(400).json({ success: false, error: "Invalid YouTube URL" });
   }
 
-  const cookiePath = writeUserCookies(cookies);
   try {
-    const info = await youtubeService.getVideoInfo(url, cookiePath);
+    logger.info("Fetching video info", { url });
+    const info = await youtubeService.getVideoInfo(url, cookies || null);
+    logger.info("Video info fetched", { title: info.title, duration: info.duration });
     res.json({ success: true, data: info });
   } catch (err) {
+    logger.error("Failed to fetch video info", { url, error: err.message });
     res.status(500).json({ success: false, error: err.message });
-  } finally {
-    cleanupCookieFile(cookiePath);
   }
 }
 
@@ -64,50 +46,75 @@ function downloadSSE(req, res) {
   const { url, quality, cookies } = req.body;
 
   if (!url || !isValidYouTubeURL(url)) {
+    logger.warn("Download SSE: Invalid YouTube URL", { url });
     res.status(400).json({ success: false, error: "Invalid YouTube URL" });
     return;
   }
 
-  const cookiePath = writeUserCookies(cookies);
+  logger.info("Starting download", { url, quality: quality || "balanced" });
 
-  // Set up SSE headers
+  // Set up SSE headers — disable buffering at every layer
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
-    Connection: "keep-alive",
+    "Cache-Control": "no-cache, no-transform",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no", // Prevents nginx/reverse-proxy buffering
   });
 
-  const emitter = youtubeService.downloadAndMerge(url, quality || "balanced", cookiePath);
+  // Disable Nagle's algorithm so small writes are sent immediately
+  if (req.socket) {
+    req.socket.setNoDelay(true);
+    req.socket.setTimeout(0);
+  }
 
-  emitter.on("progress", (data) => {
-    res.write(`data: ${JSON.stringify({ type: "progress", ...data })}\n\n`);
-  });
+  // Flush headers immediately to establish the SSE connection
+  res.flushHeaders();
 
-  emitter.on("done", (result) => {
-    res.write(
-      `data: ${JSON.stringify({
-        type: "done",
-        title: result.title,
-        filename: result.filename,
-        size: result.size,
-        sizeFormatted: formatBytes(result.size),
-        downloadUrl: `/api/video/file/${encodeURIComponent(result.filename)}`,
-      })}\n\n`
-    );
-    cleanupCookieFile(cookiePath);
-    res.end();
-  });
+  // Send initial event and flush it to the client
+  res.write(`data: ${JSON.stringify({ type: "progress", phase: "Initializing...", percent: 0 })}\n\n`);
 
-  emitter.on("error", (err) => {
-    res.write(`data: ${JSON.stringify({ type: "error", error: err.message })}\n\n`);
-    cleanupCookieFile(cookiePath);
-    res.end();
-  });
+  // Defer the download start to next tick so the initial write is flushed
+  setImmediate(() => {
+    const emitter = youtubeService.downloadAndMerge(url, quality || "balanced", cookies || null);
 
-  // If client disconnects, nothing to clean up (ffmpeg will finish or fail)
-  req.on("close", () => {
-    emitter.removeAllListeners();
-    cleanupCookieFile(cookiePath);
+    emitter.on("progress", (data) => {
+      res.write(`data: ${JSON.stringify({ type: "progress", ...data })}\n\n`);
+    });
+
+    // Send SSE keepalive comments every 5s to prevent connection timeout
+    const keepalive = setInterval(() => {
+      res.write(`: keepalive\n\n`);
+    }, 5000);
+
+    emitter.on("done", (result) => {
+      clearInterval(keepalive);
+      logger.info("Download complete", { title: result.title, filename: result.filename, size: formatBytes(result.size) });
+      res.write(
+        `data: ${JSON.stringify({
+          type: "done",
+          title: result.title,
+          filename: result.filename,
+          size: result.size,
+          sizeFormatted: formatBytes(result.size),
+          downloadUrl: `/api/video/file/${encodeURIComponent(result.filename)}`,
+        })}\n\n`
+      );
+      res.end();
+    });
+
+    emitter.on("error", (err) => {
+      clearInterval(keepalive);
+      logger.error("Download failed", { url, quality, error: err.message });
+      res.write(`data: ${JSON.stringify({ type: "error", error: err.message })}\n\n`);
+      res.end();
+    });
+
+    // If client disconnects
+    req.on("close", () => {
+      clearInterval(keepalive);
+      logger.info("Client disconnected", { url });
+      emitter.removeAllListeners();
+    });
   });
 }
 
@@ -120,9 +127,11 @@ function getFile(req, res) {
   const filePath = youtubeService.getDownloadedFilePath(filename);
 
   if (!filePath) {
+    logger.warn("File not found", { filename });
     return res.status(404).json({ success: false, error: "File not found" });
   }
 
+  logger.info("Serving file", { filename });
   res.download(filePath);
 }
 
