@@ -6,10 +6,11 @@
   "scripts": {
     "start": "node server.js",
     "dev": "npx nodemon server.js",
-    "build": "YOUTUBE_DL_SKIP_DOWNLOAD=true npm install && mkdir -p ./node_modules/youtube-dl-exec/bin && curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o ./node_modules/youtube-dl-exec/bin/yt-dlp && chmod +x ./node_modules/youtube-dl-exec/bin/yt-dlp"
+    "build": "YOUTUBE_DL_SKIP_DOWNLOAD=true npm install && npx @puppeteer/browsers install chrome@stable --path ./.cache/puppeteer && mkdir -p ./node_modules/youtube-dl-exec/bin && curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o ./node_modules/youtube-dl-exec/bin/yt-dlp && chmod +x ./node_modules/youtube-dl-exec/bin/yt-dlp"
   },
   "dependencies": {
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "@puppeteer/browsers": "^2.6.0",
     "debug": "^4.4.3",
     "express": "^4.21.0",
     "fluent-ffmpeg": "^2.1.3",

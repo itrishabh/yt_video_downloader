@@ -4,19 +4,65 @@ const fs = require("fs");
 const path = require("path");
 const debug = require("debug")("app:po-token");
 
+const ROOT_DIR = path.join(__dirname, "..", "..");
+
 /**
  * Detect the installed Chrome/Chromium executable path on the system.
+ * Checks: env var → build-installed Chrome (.cache/puppeteer) → system Chrome
  */
 function findChromePath() {
+  // 1. Env var override
+  if (process.env.CHROME_PATH && fs.existsSync(process.env.CHROME_PATH)) {
+    return process.env.CHROME_PATH;
+  }
+
+  // 2. Check .cache/puppeteer (installed by build script on Render)
+  const cacheDir = path.join(ROOT_DIR, ".cache", "puppeteer");
+  if (fs.existsSync(cacheDir)) {
+    try {
+      // Find the chrome executable inside the cache
+      const entries = fs.readdirSync(cacheDir);
+      for (const entry of entries) {
+        const chromeDir = path.join(cacheDir, entry);
+        // Linux path structure: chrome/linux-VERSION/chrome-linux64/chrome
+        const candidates = [
+          path.join(chromeDir, "chrome-linux64", "chrome"),
+          path.join(chromeDir, "chrome-linux", "chrome"),
+          path.join(chromeDir, "chrome"),
+        ];
+        // Recurse one more level for versioned subdirectories
+        if (fs.existsSync(chromeDir) && fs.statSync(chromeDir).isDirectory()) {
+          const subEntries = fs.readdirSync(chromeDir);
+          for (const sub of subEntries) {
+            candidates.push(
+              path.join(chromeDir, sub, "chrome-linux64", "chrome"),
+              path.join(chromeDir, sub, "chrome-linux", "chrome"),
+              path.join(chromeDir, sub, "chrome")
+            );
+          }
+        }
+        for (const c of candidates) {
+          if (fs.existsSync(c)) {
+            debug("Found cached browser at: %s", c);
+            return c;
+          }
+        }
+      }
+    } catch {
+      // ignore cache read errors
+    }
+  }
+
+  // 3. System-installed browsers
   const candidates = [];
 
   if (process.platform === "win32") {
     candidates.push(
-      process.env["PROGRAMFILES(X86)"] + "\\Google\\Chrome\\Application\\chrome.exe",
-      process.env["PROGRAMFILES"] + "\\Google\\Chrome\\Application\\chrome.exe",
-      process.env.LOCALAPPDATA + "\\Google\\Chrome\\Application\\chrome.exe",
-      process.env["PROGRAMFILES(X86)"] + "\\Microsoft\\Edge\\Application\\msedge.exe",
-      process.env["PROGRAMFILES"] + "\\Microsoft\\Edge\\Application\\msedge.exe"
+      (process.env["PROGRAMFILES(X86)"] || "") + "\\Google\\Chrome\\Application\\chrome.exe",
+      (process.env["PROGRAMFILES"] || "") + "\\Google\\Chrome\\Application\\chrome.exe",
+      (process.env.LOCALAPPDATA || "") + "\\Google\\Chrome\\Application\\chrome.exe",
+      (process.env["PROGRAMFILES(X86)"] || "") + "\\Microsoft\\Edge\\Application\\msedge.exe",
+      (process.env["PROGRAMFILES"] || "") + "\\Microsoft\\Edge\\Application\\msedge.exe"
     );
   } else if (process.platform === "darwin") {
     candidates.push(
@@ -38,7 +84,7 @@ function findChromePath() {
 
   for (const candidate of candidates) {
     if (candidate && fs.existsSync(candidate)) {
-      debug("Found browser at: %s", candidate);
+      debug("Found system browser at: %s", candidate);
       return candidate;
     }
   }
@@ -106,16 +152,17 @@ class POTokenService {
 
     const chromePath = findChromePath();
     if (!chromePath) {
-      console.error("[POTokenService] No Chrome/Chromium found on system. Install Chrome or set CHROME_PATH env.");
+      console.error("[POTokenService] No Chrome/Chromium found. Set CHROME_PATH env or run the build script.");
       return { poToken: null, visitorData: null };
     }
 
     try {
       debug("Launching headless browser for PO token generation...");
+      debug("Using browser: %s", chromePath);
 
       browser = await puppeteer.launch({
         headless: "new",
-        executablePath: process.env.CHROME_PATH || chromePath,
+        executablePath: chromePath,
         args: [
           "--no-sandbox",
           "--disable-setuid-sandbox",
